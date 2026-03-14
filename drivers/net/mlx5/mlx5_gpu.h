@@ -47,6 +47,9 @@ struct mlx5_gpu_rxq_params {
 	uint16_t wq_size;                /* Number of WQEs */
 	uint16_t cq_size;                /* Number of CQEs */
 	uint32_t rqn;                    /* RQ number (output) */
+	/* CQE compression */
+	uint32_t cqe_comp_en;            /* 1 = enable CQE compression */
+	uint32_t mini_cqe_res_format;    /* 0 = HASH (rx_hash + byte_cnt) */
 };
 
 /**

@@ -25,6 +25,7 @@
 #include "mlx5_gpu.h"
 #include "mlx5.h"
 #include "mlx5_defs.h"
+#include "mlx5_rx.h"
 #include "rte_pmd_mlx5.h"
 
 /**
@@ -139,7 +140,8 @@ mlx5_gpu_umem_deregister(struct mlx5_gpu_mem *gpu_mem)
  */
 static struct mlx5_devx_obj *
 mlx5_gpu_cq_create(struct mlx5_priv *priv, struct mlx5_gpu_mem *cq_mem,
-		    uint32_t log_cq_size)
+		    uint32_t log_cq_size, uint32_t cqe_comp_en,
+		    uint32_t mini_cqe_res_format)
 {
 	void *ctx = priv->sh->cdev->ctx;
 	uint32_t uar_page_id = mlx5_os_get_devx_uar_page_id(
@@ -178,6 +180,11 @@ mlx5_gpu_cq_create(struct mlx5_priv *priv, struct mlx5_gpu_mem *cq_mem,
 	cq_attr.db_umem_id = cq_mem->umem_id;
 	cq_attr.db_umem_offset =
 		(uint64_t)(1u << log_cq_size) * sizeof(struct mlx5_cqe);
+
+	if (cqe_comp_en) {
+		cq_attr.cqe_comp_en = 1;
+		cq_attr.mini_cqe_res_format = mini_cqe_res_format;
+	}
 
 	return mlx5_devx_cmd_create_cq(ctx, &cq_attr);
 }
@@ -306,7 +313,7 @@ mlx5_gpu_create_txq(uint16_t port_id, uint16_t idx,
 	}
 
 	/* Step 2: Create CQ with GPU memory */
-	cq_obj = mlx5_gpu_cq_create(priv, params->cq_mem, log_cq_size);
+	cq_obj = mlx5_gpu_cq_create(priv, params->cq_mem, log_cq_size, 0, 0);
 	if (!cq_obj) {
 		DRV_LOG(ERR, "TX queue %u: CQ creation failed", idx);
 		ret = -EIO;
@@ -465,7 +472,9 @@ mlx5_gpu_create_rxq(uint16_t port_id, uint16_t idx,
 	}
 
 	/* Step 2: Create CQ with embedded DBR at buffer tail. */
-	cq_obj = mlx5_gpu_cq_create(priv, params->cq_mem, log_cq_size);
+	cq_obj = mlx5_gpu_cq_create(priv, params->cq_mem, log_cq_size,
+				    params->cqe_comp_en,
+				    params->mini_cqe_res_format);
 	if (!cq_obj) {
 		DRV_LOG(ERR, "RX queue %u: CQ creation failed", idx);
 		ret = -EIO;
@@ -494,7 +503,6 @@ mlx5_gpu_create_rxq(uint16_t port_id, uint16_t idx,
 			priv->sh->cdev->config.hca_attr.rq_ts_format);
 
 	/* Work Queue attributes for RQ */
-	rq_attr.wq_attr.wq_type = MLX5_WQ_TYPE_CYCLIC;
 	rq_attr.wq_attr.pd = priv->sh->cdev->pdn;
 	/*
 	 * Do NOT set uar_page for RQ: the standard DPDK driver leaves this 0.
@@ -502,22 +510,24 @@ mlx5_gpu_create_rxq(uint16_t port_id, uint16_t idx,
 	 * Setting a non-zero UAR page in the RQ WQ context on a VF also
 	 * returns BAD_PARAM (syndrome 0x3b8512).
 	 */
-	/* Match standard DevX cyclic RQ layout: one 16-byte data segment per WQE. */
-	rq_attr.wq_attr.log_wq_stride =
-		rte_log2_u32(sizeof(struct mlx5_wqe_data_seg));
 	rq_attr.wq_attr.log_wq_sz = log_wq_size;
 	rq_attr.wq_attr.log_wq_pg_sz = MLX5_LOG_PAGE_SIZE - 12;
+
+	/* Standard cyclic RQ: one 16-byte data segment per WQE. */
+	rq_attr.wq_attr.wq_type = MLX5_WQ_TYPE_CYCLIC;
+	rq_attr.wq_attr.log_wq_stride =
+		rte_log2_u32(sizeof(struct mlx5_wqe_data_seg));
 
 	/* Point WQ to GPU UMEM */
 	rq_attr.wq_attr.wq_umem_valid = 1;
 	rq_attr.wq_attr.wq_umem_id = params->wq_mem->umem_id;
 	rq_attr.wq_attr.wq_umem_offset = 0;
 
-	/* Doorbell record at end of WQ UMEM — after all (1<<log_wq_size) 16-byte WQEs. */
+	/* Doorbell record at end of WQ UMEM */
 	rq_attr.wq_attr.dbr_umem_valid = 1;
 	rq_attr.wq_attr.dbr_umem_id = params->wq_mem->umem_id;
 	rq_attr.wq_attr.dbr_addr =
-		(uint64_t)(1u << log_wq_size) * sizeof(struct mlx5_wqe_data_seg);
+		(uint64_t)(1u << log_wq_size) << rq_attr.wq_attr.log_wq_stride;
 
 	rq_obj = mlx5_devx_cmd_create_rq(ctx, &rq_attr, priv->sh->numa_node);
 	if (!rq_obj) {
