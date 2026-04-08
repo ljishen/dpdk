@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2025 - GPU-Initiated Network Stack (GINS) Project
+ * Copyright 2025 - GPU-Initiated Network Storage (GINS) Project
  */
 
 #include <stddef.h>

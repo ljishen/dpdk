@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2025 - GPU-Initiated Network Stack (GINS) Project
+ * Copyright 2025 - GPU-Initiated Network Storage (GINS) Project
  */
 
 #ifndef RTE_PMD_MLX5_GPU_H_
