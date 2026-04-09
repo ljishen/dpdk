@@ -369,8 +369,9 @@ mlx5_gpu_create_txq(uint16_t port_id, uint16_t idx,
 
 	sq_attr.wq_attr.wq_type        = MLX5_WQ_TYPE_CYCLIC;
 	sq_attr.wq_attr.pd             = qc.priv->sh->cdev->pdn;
-	sq_attr.wq_attr.uar_page       = mlx5_os_get_devx_uar_page_id(
-						qc.priv->sh->tx_uar.obj);
+	sq_attr.wq_attr.uar_page       = (params->uar && params->uar->obj)
+		? params->uar->page_id
+		: mlx5_os_get_devx_uar_page_id(qc.priv->sh->tx_uar.obj);
 	sq_attr.wq_attr.log_wq_stride  = rte_log2_u32(MLX5_WQE_SIZE);
 	sq_attr.wq_attr.log_wq_sz      = log_wq_size;
 	sq_attr.wq_attr.log_wq_pg_sz   = MLX5_LOG_PAGE_SIZE - 12;
@@ -544,6 +545,94 @@ mlx5_gpu_get_uar_info(uint16_t port_id,
 	DRV_LOG(DEBUG, "UAR info: TX=%p, RX=%p, page_size=%zu",
 		info->tx_uar_addr, info->rx_uar_addr, info->page_size);
 	return 0;
+}
+
+/**
+ * Allocate a per-queue UAR via DevX.
+ *
+ * Retries up to 8 times to ensure the returned UAR has a valid
+ * (non-NULL) base address, matching the upstream mlx5_devx_alloc_uar()
+ * retry logic.
+ *
+ * @param[in] port_id
+ *   DPDK port ID.
+ * @param[out] uar
+ *   Per-queue UAR descriptor populated on success.
+ *
+ * @return
+ *   0 on success, negative error code on failure.
+ */
+RTE_EXPORT_INTERNAL_SYMBOL(mlx5_gpu_alloc_uar)
+__rte_internal
+int
+mlx5_gpu_alloc_uar(uint16_t port_id, struct mlx5_gpu_uar *uar)
+{
+	struct mlx5_priv *priv;
+	void *uar_obj = NULL;
+	void *base_addr = NULL;
+	uint32_t retry;
+
+	if (!uar || port_id >= RTE_MAX_ETHPORTS)
+		return -EINVAL;
+
+	memset(uar, 0, sizeof(*uar));
+	priv = rte_eth_devices[port_id].data->dev_private;
+
+	for (retry = 0; retry < 8; ++retry) {
+#ifdef MLX5DV_UAR_ALLOC_TYPE_NC
+		uar_obj = mlx5_glue->devx_alloc_uar(
+				priv->sh->cdev->ctx,
+				MLX5DV_UAR_ALLOC_TYPE_NC);
+		if (!uar_obj)
+			uar_obj = mlx5_glue->devx_alloc_uar(
+					priv->sh->cdev->ctx,
+					MLX5DV_UAR_ALLOC_TYPE_BF);
+#else
+		uar_obj = mlx5_glue->devx_alloc_uar(
+				priv->sh->cdev->ctx, 0);
+#endif
+		if (!uar_obj) {
+			DRV_LOG(ERR, "devx_alloc_uar failed for per-queue UAR");
+			return -ENOMEM;
+		}
+		base_addr = mlx5_os_get_devx_uar_base_addr(uar_obj);
+		if (base_addr)
+			break;
+		DRV_LOG(DEBUG, "Per-queue UAR retry %u (NULL base)", retry);
+		mlx5_glue->devx_free_uar(uar_obj);
+		uar_obj = NULL;
+	}
+
+	if (!uar_obj || !base_addr) {
+		DRV_LOG(ERR, "Failed to allocate per-queue UAR with valid base");
+		return -ENOMEM;
+	}
+
+	uar->obj = uar_obj;
+	uar->base_addr = base_addr;
+	uar->reg_addr = mlx5_os_get_devx_uar_reg_addr(uar_obj);
+	uar->page_id = mlx5_os_get_devx_uar_page_id(uar_obj);
+
+	DRV_LOG(DEBUG, "Per-queue UAR allocated: base=%p reg=%p page_id=%u",
+		uar->base_addr, uar->reg_addr, uar->page_id);
+	return 0;
+}
+
+/**
+ * Free a per-queue UAR allocated by mlx5_gpu_alloc_uar().
+ *
+ * @param[in] uar
+ *   Per-queue UAR descriptor.
+ */
+RTE_EXPORT_INTERNAL_SYMBOL(mlx5_gpu_free_uar)
+__rte_internal
+void
+mlx5_gpu_free_uar(struct mlx5_gpu_uar *uar)
+{
+	if (uar && uar->obj) {
+		mlx5_glue->devx_free_uar(uar->obj);
+		memset(uar, 0, sizeof(*uar));
+	}
 }
 
 /**

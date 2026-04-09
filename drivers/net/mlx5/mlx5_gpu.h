@@ -26,6 +26,19 @@ struct mlx5_gpu_mem {
 	uint32_t umem_id;       /**< DevX UMEM ID. */
 };
 
+/**
+ * Per-queue UAR (User Access Region) for independent doorbell mapping.
+ *
+ * Each TX queue gets its own UAR page so the GPU can write doorbells
+ * to distinct MMIO registers without serialization.
+ */
+struct mlx5_gpu_uar {
+	void *obj;          /**< DevX UAR object (opaque). */
+	void *base_addr;    /**< CPU VA of UAR page base. */
+	void *reg_addr;     /**< CPU VA of BF doorbell register (base + BF offset). */
+	uint32_t page_id;   /**< UAR page ID for SQ creation. */
+};
+
 /** Parameters for GPU TX queue creation. */
 struct mlx5_gpu_txq_params {
 	struct mlx5_gpu_mem *wq_mem;     /**< Work Queue memory. */
@@ -33,6 +46,7 @@ struct mlx5_gpu_txq_params {
 	uint16_t wq_size;                /**< Number of WQEs. */
 	uint16_t cq_size;                /**< Number of CQEs. */
 	uint32_t sqn;                    /**< SQ number (output). */
+	struct mlx5_gpu_uar *uar;        /**< Per-queue UAR (NULL = use shared). */
 };
 
 /** Parameters for GPU RX queue creation. */
@@ -143,6 +157,31 @@ int mlx5_gpu_get_uar_info(uint16_t port_id,
  */
 int mlx5_gpu_enable_ext_rxqs(uint16_t port_id,
 			     const uint32_t *rqns, int num_rqs);
+
+/**
+ * Allocate a per-queue UAR (DevX) for independent doorbell mapping.
+ *
+ * The returned UAR page ID is passed to mlx5_gpu_create_txq() so the
+ * SQ is bound to this UAR.  The base_addr is mapped to GPU via CUDA
+ * IOMEM for direct doorbell writes.
+ *
+ * @param[in] port_id
+ *   DPDK port ID.
+ * @param[out] uar
+ *   Per-queue UAR descriptor populated on success.
+ *
+ * @return
+ *   0 on success, negative error code on failure.
+ */
+int mlx5_gpu_alloc_uar(uint16_t port_id, struct mlx5_gpu_uar *uar);
+
+/**
+ * Free a per-queue UAR allocated by mlx5_gpu_alloc_uar().
+ *
+ * @param[in] uar
+ *   Per-queue UAR descriptor.
+ */
+void mlx5_gpu_free_uar(struct mlx5_gpu_uar *uar);
 
 #ifdef __cplusplus
 }
