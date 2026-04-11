@@ -5,7 +5,6 @@
 #include <errno.h>
 #include <string.h>
 #include <stdint.h>
-#include <unistd.h>
 
 #include <rte_malloc.h>
 #include <rte_errno.h>
@@ -26,61 +25,7 @@
 #include "mlx5_defs.h"
 #include "rte_pmd_mlx5.h"
 
-/**
- * Register GPU memory with MLX5 for NIC DMA access.
- *
- * nvidia-peermem must be loaded so that ibv_reg_mr() can resolve
- * GPU virtual addresses via get_user_pages() interception.
- *
- * @param[in] pd
- *   Protection domain.
- * @param[in] gpu_mem
- *   GPU memory descriptor (gpu_ptr and size must be set).
- *
- * @return
- *   0 on success, negative error code on failure.
- */
-static int
-mlx5_mr_register_gpu(void *pd, struct mlx5_gpu_mem *gpu_mem)
-{
-	struct ibv_mr *ibv_mr;
-
-	if (!pd || !gpu_mem || !gpu_mem->gpu_ptr || gpu_mem->size == 0) {
-		DRV_LOG(ERR, "Invalid parameters for GPU MR registration");
-		return -EINVAL;
-	}
-
-	ibv_mr = mlx5_glue->reg_mr(pd, gpu_mem->gpu_ptr, gpu_mem->size,
-				    IBV_ACCESS_LOCAL_WRITE);
-	if (!ibv_mr) {
-		DRV_LOG(ERR, "ibv_reg_mr GPU ptr=%p size=%zu failed: %s",
-			gpu_mem->gpu_ptr, gpu_mem->size, strerror(errno));
-		return -errno;
-	}
-
-	gpu_mem->mr = (struct mlx5_pmd_mr){
-		.lkey = ibv_mr->lkey,
-		.addr = gpu_mem->gpu_ptr,
-		.len  = gpu_mem->size,
-		.obj  = ibv_mr,
-	};
-
-	DRV_LOG(DEBUG, "GPU MR registered: ptr=%p size=%zu lkey=0x%x",
-		gpu_mem->gpu_ptr, gpu_mem->size, gpu_mem->mr.lkey);
-	return 0;
-}
-
-/**
- * Register GPU memory as DevX UMEM for queue creation.
- *
- * @param[in] ctx
- *   Device context.
- * @param[in] gpu_mem
- *   GPU memory region to register.
- *
- * @return
- *   0 on success, negative error code on failure.
- */
+/** Register GPU memory as DevX UMEM for queue creation. */
 static int
 mlx5_gpu_umem_register(void *ctx, struct mlx5_gpu_mem *gpu_mem)
 {
@@ -101,12 +46,7 @@ mlx5_gpu_umem_register(void *ctx, struct mlx5_gpu_mem *gpu_mem)
 	return 0;
 }
 
-/**
- * Deregister GPU UMEM.
- *
- * @param[in] gpu_mem
- *   GPU memory region to deregister.
- */
+/** Deregister GPU UMEM. */
 static void
 mlx5_gpu_umem_deregister(struct mlx5_gpu_mem *gpu_mem)
 {
@@ -117,21 +57,7 @@ mlx5_gpu_umem_deregister(struct mlx5_gpu_mem *gpu_mem)
 	}
 }
 
-/**
- * Create a DevX CQ backed by GPU memory.
- *
- * The doorbell record is appended at the buffer tail.
- *
- * @param[in] priv
- *   MLX5 device private data.
- * @param[in] cq_mem
- *   GPU memory for CQ buffer.
- * @param[in] log_cq_size
- *   Log2 of CQ size.
- *
- * @return
- *   DevX CQ object, or NULL on failure.
- */
+/** Create a DevX CQ backed by GPU memory (DBR at buffer tail). */
 static struct mlx5_devx_obj *
 mlx5_gpu_cq_create(struct mlx5_priv *priv, struct mlx5_gpu_mem *cq_mem,
 		    uint32_t log_cq_size)
@@ -169,40 +95,45 @@ mlx5_gpu_cq_create(struct mlx5_priv *priv, struct mlx5_gpu_mem *cq_mem,
 	return mlx5_devx_cmd_create_cq(ctx, &cq_attr);
 }
 
-/**
- * Register GPU memory for a given port.
- *
- * @param[in] port_id
- *   DPDK port ID.
- * @param[in] gpu_mem
- *   GPU memory descriptor.
- *
- * @return
- *   0 on success, negative error code on failure.
- */
+/** Register GPU memory with NIC for DMA (nvidia-peermem). */
 RTE_EXPORT_INTERNAL_SYMBOL(mlx5_gpu_register_mem)
 __rte_internal
 int
 mlx5_gpu_register_mem(uint16_t port_id, struct mlx5_gpu_mem *gpu_mem)
 {
 	struct mlx5_priv *priv;
+	void *pd;
+	struct ibv_mr *ibv_mr;
 
-	if (!gpu_mem || port_id >= RTE_MAX_ETHPORTS)
+	if (!gpu_mem || !gpu_mem->gpu_ptr || gpu_mem->size == 0)
+		return -EINVAL;
+	if (port_id >= RTE_MAX_ETHPORTS)
 		return -EINVAL;
 
 	priv = rte_eth_devices[port_id].data->dev_private;
-	return mlx5_mr_register_gpu(priv->sh->cdev->pd, gpu_mem);
+	pd = priv->sh->cdev->pd;
+
+	ibv_mr = mlx5_glue->reg_mr(pd, gpu_mem->gpu_ptr, gpu_mem->size,
+				    IBV_ACCESS_LOCAL_WRITE);
+	if (!ibv_mr) {
+		DRV_LOG(ERR, "ibv_reg_mr GPU ptr=%p size=%zu failed: %s",
+			gpu_mem->gpu_ptr, gpu_mem->size, strerror(errno));
+		return -errno;
+	}
+
+	gpu_mem->mr = (struct mlx5_pmd_mr){
+		.lkey = ibv_mr->lkey,
+		.addr = gpu_mem->gpu_ptr,
+		.len  = gpu_mem->size,
+		.obj  = ibv_mr,
+	};
+
+	DRV_LOG(DEBUG, "GPU MR registered: ptr=%p size=%zu lkey=0x%x",
+		gpu_mem->gpu_ptr, gpu_mem->size, gpu_mem->mr.lkey);
+	return 0;
 }
 
-/**
- * Deregister GPU memory (ibverbs MR).
- *
- * @param[in] gpu_mem
- *   GPU memory descriptor with registered MR.
- *
- * @return
- *   0 on success, negative error code on failure.
- */
+/** Deregister GPU memory (ibverbs MR). */
 RTE_EXPORT_INTERNAL_SYMBOL(mlx5_gpu_deregister_mem)
 __rte_internal
 int
@@ -230,24 +161,6 @@ struct gpu_qp_ctx {
  *
  * Validates MR registration, UMEM-registers both regions, and creates CQ.
  * On failure all partial work is undone; the caller need not clean up.
- *
- * @param[in] port_id
- *   DPDK port ID.
- * @param[in] idx
- *   Queue index.
- * @param[in] dir
- *   Direction string ("TX" or "RX") for log messages.
- * @param[in] wq_mem
- *   Work Queue GPU memory.
- * @param[in] cq_mem
- *   Completion Queue GPU memory.
- * @param[in] cq_size
- *   Number of CQEs.
- * @param[out] qc
- *   Queue context populated on success.
- *
- * @return
- *   0 on success, negative error code on failure.
  */
 static int
 gpu_queue_setup(uint16_t port_id, uint16_t idx, const char *dir,
@@ -292,20 +205,7 @@ gpu_queue_setup(uint16_t port_id, uint16_t idx, const char *dir,
 	return 0;
 }
 
-/**
- * Roll back a failed queue creation.
- *
- * Destroys DevX objects and deregisters UMEMs.
- *
- * @param[in] q_obj
- *   Queue DevX object (SQ or RQ), may be NULL.
- * @param[in] qc
- *   Queue context from gpu_queue_setup().
- * @param[in] wq_mem
- *   Work Queue GPU memory.
- * @param[in] cq_mem
- *   Completion Queue GPU memory.
- */
+/** Roll back a failed queue creation (destroy DevX + deregister UMEMs). */
 static void
 gpu_queue_teardown(struct mlx5_devx_obj *q_obj, struct gpu_qp_ctx *qc,
 		   struct mlx5_gpu_mem *wq_mem, struct mlx5_gpu_mem *cq_mem)
@@ -318,19 +218,7 @@ gpu_queue_teardown(struct mlx5_devx_obj *q_obj, struct gpu_qp_ctx *qc,
 	mlx5_gpu_umem_deregister(cq_mem);
 }
 
-/**
- * Create TX queue with GPU memory via DevX.
- *
- * @param[in] port_id
- *   DPDK port ID.
- * @param[in] idx
- *   Queue index.
- * @param[in,out] params
- *   GPU TX queue parameters; sqn is populated on success.
- *
- * @return
- *   0 on success, negative error code on failure.
- */
+/** Create TX queue with GPU memory via DevX. */
 RTE_EXPORT_INTERNAL_SYMBOL(mlx5_gpu_create_txq)
 __rte_internal
 int
@@ -409,19 +297,7 @@ error:
 	return ret;
 }
 
-/**
- * Create RX queue with GPU memory via DevX.
- *
- * @param[in] port_id
- *   DPDK port ID.
- * @param[in] idx
- *   Queue index.
- * @param[in,out] params
- *   GPU RX queue parameters; rqn is populated on success.
- *
- * @return
- *   0 on success, negative error code on failure.
- */
+/** Create RX queue with GPU memory via DevX. */
 RTE_EXPORT_INTERNAL_SYMBOL(mlx5_gpu_create_rxq)
 __rte_internal
 int
@@ -502,65 +378,11 @@ error:
 }
 
 /**
- * Get UAR base addresses for GPU doorbell mapping.
- *
- * @param[in] port_id
- *   DPDK port ID.
- * @param[out] info
- *   UAR information (addresses and page size).
- *
- * @return
- *   0 on success, negative error code on failure.
- */
-RTE_EXPORT_INTERNAL_SYMBOL(mlx5_gpu_get_uar_info)
-__rte_internal
-int
-mlx5_gpu_get_uar_info(uint16_t port_id,
-		      struct mlx5_gpu_uar_info *info)
-{
-	struct mlx5_priv *priv;
-
-	if (!info || port_id >= RTE_MAX_ETHPORTS)
-		return -EINVAL;
-
-	priv = rte_eth_devices[port_id].data->dev_private;
-
-	if (!priv->sh->tx_uar.obj) {
-		DRV_LOG(ERR, "TX DevX UAR is not allocated");
-		return -ENOENT;
-	}
-
-	info->tx_uar_addr = mlx5_os_get_devx_uar_base_addr(
-				priv->sh->tx_uar.obj);
-	info->rx_uar_addr = priv->sh->rx_uar.obj
-		? mlx5_os_get_devx_uar_base_addr(priv->sh->rx_uar.obj)
-		: info->tx_uar_addr;
-	info->page_size = getpagesize();
-
-	if (!info->tx_uar_addr || !info->rx_uar_addr) {
-		DRV_LOG(ERR, "Failed to get UAR base addresses");
-		return -EFAULT;
-	}
-
-	DRV_LOG(DEBUG, "UAR info: TX=%p, RX=%p, page_size=%zu",
-		info->tx_uar_addr, info->rx_uar_addr, info->page_size);
-	return 0;
-}
-
-/**
  * Allocate a per-queue UAR via DevX.
  *
  * Retries up to 8 times to ensure the returned UAR has a valid
  * (non-NULL) base address, matching the upstream mlx5_devx_alloc_uar()
  * retry logic.
- *
- * @param[in] port_id
- *   DPDK port ID.
- * @param[out] uar
- *   Per-queue UAR descriptor populated on success.
- *
- * @return
- *   0 on success, negative error code on failure.
  */
 RTE_EXPORT_INTERNAL_SYMBOL(mlx5_gpu_alloc_uar)
 __rte_internal
@@ -618,12 +440,7 @@ mlx5_gpu_alloc_uar(uint16_t port_id, struct mlx5_gpu_uar *uar)
 	return 0;
 }
 
-/**
- * Free a per-queue UAR allocated by mlx5_gpu_alloc_uar().
- *
- * @param[in] uar
- *   Per-queue UAR descriptor.
- */
+/** Free a per-queue UAR. */
 RTE_EXPORT_INTERNAL_SYMBOL(mlx5_gpu_free_uar)
 __rte_internal
 void
@@ -635,19 +452,7 @@ mlx5_gpu_free_uar(struct mlx5_gpu_uar *uar)
 	}
 }
 
-/**
- * Register GPU DevX RQ numbers as DPDK external RxQs.
- *
- * @param[in] port_id
- *   DPDK port ID.
- * @param[in] rqns
- *   Array of hardware RQ numbers.
- * @param[in] num_rqs
- *   Number of RQs to register.
- *
- * @return
- *   0 on success, negative errno on failure.
- */
+/** Register GPU DevX RQ numbers as DPDK external RxQs. */
 RTE_EXPORT_INTERNAL_SYMBOL(mlx5_gpu_enable_ext_rxqs)
 __rte_internal
 int

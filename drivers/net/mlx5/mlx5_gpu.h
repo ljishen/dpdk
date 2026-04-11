@@ -115,31 +115,6 @@ int mlx5_gpu_create_rxq(uint16_t port_id, uint16_t idx,
 			struct mlx5_gpu_rxq_params *params);
 
 /**
- * UAR (User Access Region) info for GPU doorbell mapping.
- * Contains CPU VAs of pre-mmapped UAR pages that GINS registers
- * with CUDA (cuMemHostRegister IOMEM) for direct GPU doorbell writes.
- */
-struct mlx5_gpu_uar_info {
-	void *tx_uar_addr;    /**< CPU VA of TX UAR page. */
-	void *rx_uar_addr;    /**< CPU VA of RX UAR page. */
-	size_t page_size;     /**< UAR page size in bytes. */
-};
-
-/**
- * Get UAR base addresses for GPU doorbell mapping.
- *
- * @param[in] port_id
- *   DPDK port ID.
- * @param[out] info
- *   UAR information (addresses and page size).
- *
- * @return
- *   0 on success, negative error code on failure.
- */
-int mlx5_gpu_get_uar_info(uint16_t port_id,
-			  struct mlx5_gpu_uar_info *info);
-
-/**
  * Register GPU DevX RQ numbers as DPDK external RxQs.
  *
  * Populates priv->ext_rxqs starting at
