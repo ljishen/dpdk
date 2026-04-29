@@ -378,10 +378,17 @@ error:
 }
 
 /**
- * Allocate a per-queue UAR via DevX.
+ * Allocate a per-queue UAR via DevX in Non-Cached (NC) mode.
+ *
+ * GINS posts WQEs from the GPU and triggers them with an 8-byte doorbell
+ * write to the UAR; we never inline the WQE into the UAR page (BlueFlame).
+ * NC is therefore the only correct mapping — BF would change doorbell
+ * semantics in ways the GPU-driven path does not exercise. Fail loudly if
+ * the kernel/firmware cannot provide an NC UAR rather than silently falling
+ * back to BF.
  *
  * Retries up to 8 times to ensure the returned UAR has a valid
- * (non-NULL) base address, matching the upstream mlx5_devx_alloc_uar()
+ * (non-NULL) reg address, matching the upstream mlx5_devx_alloc_uar()
  * retry logic.
  */
 RTE_EXPORT_INTERNAL_SYMBOL(mlx5_gpu_alloc_uar)
@@ -389,9 +396,12 @@ __rte_internal
 int
 mlx5_gpu_alloc_uar(uint16_t port_id, struct mlx5_gpu_uar *uar)
 {
+#ifndef MLX5DV_UAR_ALLOC_TYPE_NC
+#error "GINS requires MLX5DV_UAR_ALLOC_TYPE_NC; rdma-core too old"
+#endif
 	struct mlx5_priv *priv;
 	void *uar_obj = NULL;
-	void *base_addr = NULL;
+	void *reg_addr = NULL;
 	uint32_t retry;
 
 	if (!uar || port_id >= RTE_MAX_ETHPORTS)
@@ -401,42 +411,32 @@ mlx5_gpu_alloc_uar(uint16_t port_id, struct mlx5_gpu_uar *uar)
 	priv = rte_eth_devices[port_id].data->dev_private;
 
 	for (retry = 0; retry < 8; ++retry) {
-#ifdef MLX5DV_UAR_ALLOC_TYPE_NC
 		uar_obj = mlx5_glue->devx_alloc_uar(
 				priv->sh->cdev->ctx,
 				MLX5DV_UAR_ALLOC_TYPE_NC);
-		if (!uar_obj)
-			uar_obj = mlx5_glue->devx_alloc_uar(
-					priv->sh->cdev->ctx,
-					MLX5DV_UAR_ALLOC_TYPE_BF);
-#else
-		uar_obj = mlx5_glue->devx_alloc_uar(
-				priv->sh->cdev->ctx, 0);
-#endif
 		if (!uar_obj) {
-			DRV_LOG(ERR, "devx_alloc_uar failed for per-queue UAR");
+			DRV_LOG(ERR, "devx_alloc_uar(NC) failed for per-queue UAR");
 			return -ENOMEM;
 		}
-		base_addr = mlx5_os_get_devx_uar_base_addr(uar_obj);
-		if (base_addr)
+		reg_addr = mlx5_os_get_devx_uar_reg_addr(uar_obj);
+		if (reg_addr)
 			break;
-		DRV_LOG(DEBUG, "Per-queue UAR retry %u (NULL base)", retry);
+		DRV_LOG(DEBUG, "Per-queue UAR retry %u (NULL reg)", retry);
 		mlx5_glue->devx_free_uar(uar_obj);
 		uar_obj = NULL;
 	}
 
-	if (!uar_obj || !base_addr) {
-		DRV_LOG(ERR, "Failed to allocate per-queue UAR with valid base");
+	if (!uar_obj || !reg_addr) {
+		DRV_LOG(ERR, "Failed to allocate per-queue NC UAR with valid reg");
 		return -ENOMEM;
 	}
 
 	uar->obj = uar_obj;
-	uar->base_addr = base_addr;
-	uar->reg_addr = mlx5_os_get_devx_uar_reg_addr(uar_obj);
+	uar->reg_addr = reg_addr;
 	uar->page_id = mlx5_os_get_devx_uar_page_id(uar_obj);
 
-	DRV_LOG(DEBUG, "Per-queue UAR allocated: base=%p reg=%p page_id=%u",
-		uar->base_addr, uar->reg_addr, uar->page_id);
+	DRV_LOG(DEBUG, "Per-queue NC UAR allocated: reg=%p page_id=%u",
+		uar->reg_addr, uar->page_id);
 	return 0;
 }
 

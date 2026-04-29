@@ -30,12 +30,13 @@ struct mlx5_gpu_mem {
  * Per-queue UAR (User Access Region) for independent doorbell mapping.
  *
  * Each TX queue gets its own UAR page so the GPU can write doorbells
- * to distinct MMIO registers without serialization.
+ * to distinct MMIO registers without serialization. UAR is allocated
+ * Non-Cached (NC); the GPU only writes the 8-byte doorbell trigger to
+ * @c reg_addr and the NIC DMA-fetches the WQE from the SQ ring.
  */
 struct mlx5_gpu_uar {
 	void *obj;          /**< DevX UAR object (opaque). */
-	void *base_addr;    /**< CPU VA of UAR page base. */
-	void *reg_addr;     /**< CPU VA of BF doorbell register (base + BF offset). */
+	void *reg_addr;     /**< CPU VA of the NC doorbell register. */
 	uint32_t page_id;   /**< UAR page ID for SQ creation. */
 };
 
