@@ -14,7 +14,7 @@ if not dpdk_conf.has('RTE_COMMON_MLX5')
     subdir_done()
 endif
 
-headers = files('rte_pmd_mlx5.h')
+headers = files('rte_pmd_mlx5.h', 'mlx5_gpu.h')
 sources = files(
         'mlx5.c',
         'mlx5_gpu.c',

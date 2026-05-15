@@ -3,6 +3,9 @@
 
 includes += include_directories('.')
 
+# Required by gins for direct GPU mlx5 control (see drivers/net/mlx5/mlx5_gpu.h).
+install_headers('mlx5_glue.h')
+
 static_ibverbs = (get_option('ibverbs_link') == 'static')
 dlopen_ibverbs = (get_option('ibverbs_link') == 'dlopen')
 LIB_GLUE_BASE = 'librte_common_mlx5_glue.so'

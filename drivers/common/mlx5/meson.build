@@ -48,6 +48,14 @@ require_iova_in_mbuf = false
 
 mlx5_config = configuration_data()
 subdir(exec_env)
-configure_file(output: 'mlx5_autoconf.h', configuration: mlx5_config)
+configure_file(output: 'mlx5_autoconf.h', configuration: mlx5_config,
+        install: true, install_dir: get_option('includedir'))
+
+# Headers required by gins for direct GPU mlx5 control (see drivers/net/mlx5/mlx5_gpu.h).
+install_headers(
+        'mlx5_common_mr.h',
+        'mlx5_common_mp.h',
+        'mlx5_common_defs.h',
+)
 
 annotate_locks = false
